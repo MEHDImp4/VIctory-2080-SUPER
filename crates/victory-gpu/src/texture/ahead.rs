@@ -86,14 +86,36 @@ static BYTES: AtomicU64 = AtomicU64::new(0);
 /// copy had run, the longest; askings turned down; waits of lists.
 static STATS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 
-/// Takes the first upload of `resource`'s levels from `first` on, `there` of
-/// whose bytes are mapped (`u64::MAX`: not known). `None`: the list's.
-pub(crate) fn take(resource: This, first: u32, there: u64) -> Option<Taken> {
-    if on() { claim(resource, first, there) } else { None }
+/// Whether new jobs can use the speculative queue at the sampled VRAM usage.
+/// A disabled guard leaves the original queue behavior in place.
+pub(crate) fn has_headroom(memory: Option<[u64; 4]>) -> bool {
+    static PERCENT: OnceLock<Option<u8>> = OnceLock::new();
+    let percent = *PERCENT.get_or_init(|| {
+        std::env::var("VICTORY_UPLOAD_AHEAD_VRAM_PERCENT")
+            .ok()
+            .and_then(|value| value.trim().parse::<u8>().ok())
+            .filter(|percent| (1..=100).contains(percent))
+    });
+    within_budget(percent, memory)
 }
 
-fn claim(resource: This, first: u32, there: u64) -> Option<Taken> {
-    workers()?;
+fn within_budget(percent: Option<u8>, memory: Option<[u64; 4]>) -> bool {
+    match (percent, memory) {
+        (Some(percent), Some([budget, used, ..])) => {
+            u128::from(used) * 100 < u128::from(budget) * u128::from(percent)
+        }
+        (Some(_), None) => false,
+        (None, _) => true,
+    }
+}
+
+/// Takes the first upload of `resource`'s levels from `first` on, `there` of
+/// whose bytes are mapped (`u64::MAX`: not known). `None`: the list's.
+pub(crate) fn take(resource: This, first: u32, there: u64, headroom: bool) -> Option<Taken> {
+    if on() { claim(resource, first, there, headroom) } else { None }
+}
+
+fn claim(resource: This, first: u32, there: u64, headroom: bool) -> Option<Taken> {
     let turned_down = || {
         STATS[4].fetch_add(1, Relaxed);
         None
@@ -103,7 +125,8 @@ fn claim(resource: This, first: u32, there: u64) -> Option<Taken> {
         let way = ON_THEIR_WAY.lock().unwrap_or_else(|e| e.into_inner());
         return way.iter().find(|(serial, _)| *serial == copy.serial).map(|(_, job)| Taken::Known(job.clone()));
     }
-    if BYTES.load(Relaxed) >= MOST
+    if !headroom
+        || BYTES.load(Relaxed) >= MOST
         || copy.flags() & 0x7 != 0
         || copy.state.load(Relaxed) != 0
         || copy.grown.load(Relaxed)
@@ -115,6 +138,7 @@ fn claim(resource: This, first: u32, there: u64) -> Option<Taken> {
     {
         return turned_down();
     }
+    workers()?;
     if copy.ahead.compare_exchange(NONE, PENDING, Relaxed, Relaxed).is_err() {
         return turned_down();
     }
@@ -335,6 +359,17 @@ pub(crate) fn fresh() -> AtomicU8 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn upload_ahead_requires_reported_headroom_when_guarded() {
+        assert!(within_budget(None, None));
+        assert!(within_budget(None, Some([100, 100, 0, 0])));
+        assert!(!within_budget(Some(85), None));
+        assert!(!within_budget(Some(85), Some([0, 0, 0, 0])));
+        assert!(within_budget(Some(85), Some([100, 84, 0, 0])));
+        assert!(!within_budget(Some(85), Some([100, 85, 0, 0])));
+        assert!(!within_budget(Some(85), Some([100, 86, 0, 0])));
+    }
+
     /// The texels of a placed texture arrive by the copy queue, all levels of
     /// them, and what waits for them is called then; a second asking finds the
     /// first on its way, and a later one is the list's.
@@ -356,17 +391,18 @@ mod tests {
             return;
         }
         assert!(!there(texture));
-        let Some(Taken::New(job)) = claim(texture, 0, u64::MAX) else { panic!("not taken") };
+        assert!(claim(texture, 0, u64::MAX, false).is_none());
+        let Some(Taken::New(job)) = claim(texture, 0, u64::MAX, true) else { panic!("not taken") };
         let (told, heard) = std::sync::mpsc::channel();
         let also = told.clone();
-        let Some(Taken::Known(same)) = claim(texture, 0, u64::MAX) else { panic!("not known") };
+        let Some(Taken::Known(same)) = claim(texture, 0, u64::MAX, false) else { panic!("not known") };
         assert!(Arc::ptr_eq(&job, &same));
         job.then(move || told.send(1).unwrap());
         same.then(move || also.send(2).unwrap());
         send(&job);
         let wait = std::time::Duration::from_secs(20);
         assert_eq!((heard.recv_timeout(wait), heard.recv_timeout(wait)), (Ok(1), Ok(2)));
-        assert!(there(texture) && claim(texture, 0, u64::MAX).is_none());
+        assert!(there(texture) && claim(texture, 0, u64::MAX, true).is_none());
         // Level 0 as the card has it, and as the layout says.
         let layout = crate::resource::texture_memory(texture)
             .and_then(|(_, d)| crate::resource::texture_layout(&d).map(|t| t.planes[0].layout.clone()))

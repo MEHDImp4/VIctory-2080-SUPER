@@ -2140,6 +2140,7 @@ impl State {
         // returned here, and a slot whose texture had been streamed out
         // kept its host copy for as long as the card was full).
         let mut room = crate::resource::room(memory);
+        let mut ahead_headroom = crate::texture::ahead::has_headroom(memory);
         // Bytes uploaded by this pass since the card was last asked
         // whether it has room: asked again every 32 MiB (a pass may upload
         // 192 MB and more, and one asking a pass let the queue run some
@@ -2455,7 +2456,12 @@ impl State {
             // The first upload of a texture no list has used: on a queue of
             // its own, and the slot shows it as soon as that has run.
             let ahead = if late && !tabled && texture.is_some_and(crate::pool::fresh) {
-                crate::texture::ahead::take(resource, first, there.filter(|_| partly.is_none()).unwrap_or(u64::MAX))
+                crate::texture::ahead::take(
+                    resource,
+                    first,
+                    there.filter(|_| partly.is_none()).unwrap_or(u64::MAX),
+                    ahead_headroom,
+                )
             } else {
                 None
             };
@@ -2549,7 +2555,9 @@ impl State {
             since_asked += bytes;
             if room && since_asked >= 32 << 20 {
                 since_asked = 0;
-                room = crate::resource::room(crate::host::host().and_then(|h| h.video_memory()));
+                let memory = crate::host::host().and_then(|h| h.video_memory());
+                room = crate::resource::room(memory);
+                ahead_headroom = crate::texture::ahead::has_headroom(memory);
             }
             HEAP_TEXTURE_BYTES.fetch_add(bytes, Ordering::Relaxed);
             HEAP_TEXTURES.fetch_add(1, Ordering::Relaxed);

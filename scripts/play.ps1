@@ -1,6 +1,7 @@
 # Starts the title with the settings this fork is played with (README.md, "How to run it").
 #   scripts\play.ps1 -Exe <path of your own copy's executable>
 # -Safe         without the newer, faster ways (the first thing to try when something is wrong)
+# -Profile      Default or Rtx2080Super, which limits speculative uploads near the VRAM budget
 # -RayTracing   the title's own ray-traced indirect light: lit interiors, about a third slower
 # -Build        target\diag (the default, the build all measurements are of) or target\release
 # -More         other settings: -More @{VICTORY_PANEL='1'}
@@ -10,7 +11,8 @@ param(
     [switch]$Safe,
     [switch]$RayTracing,
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
-    [hashtable]$More = @{}
+    [hashtable]$More = @{},
+    [ValidateSet('Default', 'Rtx2080Super')][string]$Profile = 'Default'
 )
 $settings = @{
     VICTORY_TEXTURE_NO_WAIT = '1'; VICTORY_RELAY = '2'; VICTORY_WIDE_BACK = '1'; VICTORY_CARD_REHASH_RUNS = '1'
@@ -22,6 +24,9 @@ if ($Safe) {
     $settings.VICTORY_UNDER_WIDE = '0'; $settings.VICTORY_LAND_ECHO = '0'
 } else {
     $settings.VICTORY_THIN = '1'; $settings.VICTORY_JOIN_PARTS = '8'; $settings.VICTORY_UPLOAD_AHEAD = '1'
+}
+if ($Profile -eq 'Rtx2080Super') {
+    $settings.VICTORY_UPLOAD_AHEAD_VRAM_PERCENT = '85'
 }
 if ($RayTracing) { $settings.VICTORY_BVH_BUILDER = '1' }
 foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }

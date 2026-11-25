@@ -53,6 +53,26 @@ scripts\play.ps1 -Exe <path of your copy's executable>
 `scripts\play.ps1 -Safe` leaves out the newest, faster ways; try it first when
 something is wrong. `-RayTracing` turns the title's ray-traced indirect light on.
 
+### RTX 2080 SUPER profile
+
+```powershell
+scripts\play.ps1 -Profile Rtx2080Super -Exe <path of your copy's executable>
+```
+
+This experimental profile stops adding new jobs to the speculative texture
+upload queue when local VRAM usage reaches 85% of the budget reported by
+Windows or when the budget cannot be read. Existing jobs finish and new uploads
+use the regular command lists. The threshold is a starting point for testing
+on an 8 GiB RTX 2080 SUPER. There are no gameplay benchmark results for this
+profile yet.
+
+For comparison, run the same checkpoint and camera path with `-Profile Default`
+and `-Profile Rtx2080Super`, with ray tracing off and a warm shader cache for
+both. Compare frame times, visible texture pop-in, and local video memory usage.
+Use `-More @{VICTORY_UPLOAD_AHEAD_VRAM_PERCENT='80'}` to test another
+threshold. A value of `0` disables the guard. With `-Safe`, speculative uploads
+are already disabled.
+
 Before the first run, ahead of time (both can be stopped and go on later):
 
 ```powershell
