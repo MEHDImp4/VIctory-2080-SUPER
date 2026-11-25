@@ -400,11 +400,13 @@ pub fn precompile(paths: Vec<PathBuf>, jobs: Option<usize>) -> Result<()> {
     let paths = crate::default_paths(paths)?;
     let threads =
         jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+    anyhow::ensure!(threads > 0, "--jobs must be at least 1");
     let started = std::time::Instant::now();
     let seen = Mutex::new(HashSet::new());
     let done = AtomicUsize::new(0);
     let failed = Mutex::new(BTreeMap::<String, (usize, String)>::new());
     for root in &paths {
+        anyhow::ensure!(root.exists(), "shader source does not exist: {}", root.display());
         for entry in walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok) {
             if !entry.file_type().is_file() || entry.metadata().map_or(0, |m| m.len()) > MAX_FILE {
                 continue;
@@ -442,15 +444,16 @@ pub fn precompile(paths: Vec<PathBuf>, jobs: Option<usize>) -> Result<()> {
         }
     }
     let failed = failed.into_inner().unwrap_or_else(|e| e.into_inner());
+    let done = done.load(Ordering::Relaxed);
     println!(
-        "{} shaders in the cache, {} do not translate, {:.0} s",
-        done.load(Ordering::Relaxed),
+        "{done} shaders ready (including cached entries), {} do not translate, {:.0} s",
         failed.values().map(|f| f.0).sum::<usize>(),
         started.elapsed().as_secs_f64()
     );
     for (why, (n, hash)) in failed {
         println!("  {n:>5}  {why}  (e.g. {hash})");
     }
+    anyhow::ensure!(done > 0, "no shaders were prepared from the supplied paths");
     Ok(())
 }
 

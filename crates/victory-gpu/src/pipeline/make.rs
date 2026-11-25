@@ -163,6 +163,7 @@ pub(crate) fn ready(p: &Arc<Pending>) -> Option<&HostPipeline> {
     // on the next launch, even if this run never got to use it.
     if !p.used.load(Ordering::Relaxed) && !p.used.swap(true, Ordering::Relaxed) {
         super::library::note_used(&p.key);
+        super::known::note_requested(&p.key, &p.shaders, p.graphics.as_deref());
     }
     if p.made.get().is_none() {
         start(p, REQUESTED);

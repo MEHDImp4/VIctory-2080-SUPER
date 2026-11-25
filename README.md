@@ -63,8 +63,12 @@ This experimental profile stops adding new jobs to the speculative texture
 upload queue when local VRAM usage reaches 85% of the budget reported by
 Windows or when the budget cannot be read. Existing jobs finish and new uploads
 use the regular command lists. The threshold is a starting point for testing
-on an 8 GiB RTX 2080 SUPER. There are no gameplay benchmark results for this
-profile yet.
+on an 8 GiB RTX 2080 SUPER. The profile reports a 1080p display mode to the
+title, which can still choose its own render resolution. It releases idle
+staging and shadow buffers sooner when Windows is short of commit. It also
+limits waits for regular pipeline compilation to 120 ms per frame. Pending
+draws may be omitted temporarily, so prewarming is recommended. Screen
+passes keep their separate wait budget.
 
 For comparison, run the same checkpoint and camera path with `-Profile Default`
 and `-Profile Rtx2080Super`, with ray tracing off and a warm shader cache for
@@ -72,6 +76,23 @@ both. Compare frame times, visible texture pop-in, and local video memory usage.
 Use `-More @{VICTORY_UPLOAD_AHEAD_VRAM_PERCENT='80'}` to test another
 threshold. A value of `0` disables the guard. With `-Safe`, speculative uploads
 are already disabled.
+
+### Prepare the shader and pipeline caches
+
+```powershell
+scripts\play.ps1 -Profile Rtx2080Super -Exe <path of your copy's executable> -Prepare
+```
+
+Preparation scans the executable, `shaders.rpf`, and `Bink2Scarlett.dll` when
+available beside it. It uses four shader workers, then a maximum of two
+workers for recorded Direct3D pipelines. It prints how many shaders are
+ready and how many could not be translated. Preparation can be repeated
+and uses the same cache as play.
+
+The first pipeline warm-up can have nothing to do. Add `-RecordPipelines`
+to a game launch to record the pipelines requested by draws for the next
+`-Prepare`. Texture streaming and unsupported shaders still need attention
+during play. Add `-LogPath ./victory-run.log` to save frame and GPU diagnostics.
 
 Before the first run, ahead of time (both can be stopped and go on later):
 

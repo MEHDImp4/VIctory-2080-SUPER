@@ -123,15 +123,23 @@ pub(crate) fn long_ago(moment: u64, ms: u64, frames: u64) -> bool {
     (now >> 32).saturating_sub(moment >> 32) >= frames && tenths * 100 >= ms
 }
 
-/// Available physical RAM on the host in bytes, from `GlobalMemoryStatusEx`.
-pub(crate) fn available_physical_ram() -> Option<u64> {
+/// Headroom for idle RAM caches. Windows can run low on commit even with
+/// physical RAM free. `VICTORY_RAM_COMMIT_AWARE=1` uses the tighter limit.
+pub(crate) fn ram_cache_headroom() -> Option<u64> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     // SAFETY: plain data the call fills in.
     let mut m: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
     m.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
     // SAFETY: a sized structure.
     let ok = unsafe { GlobalMemoryStatusEx(&mut m) } != 0;
-    ok.then_some(m.ullAvailPhys)
+    static COMMIT_AWARE: OnceLock<bool> = OnceLock::new();
+    let commit_aware = *COMMIT_AWARE.get_or_init(|| crate::switch::on("VICTORY_RAM_COMMIT_AWARE"));
+    let headroom = if commit_aware {
+        m.ullAvailPhys.min(m.ullAvailPageFile)
+    } else {
+        m.ullAvailPhys
+    };
+    ok.then_some(headroom)
 }
 
 /// How long host copies of textures the title fills must have been idle to
@@ -365,7 +373,7 @@ pub(crate) fn keep_freed() -> bool {
 
 /// Effective idle timeout (in milliseconds) for system-RAM caches (staging
 /// buffers, loose shadows, and the mapped pipeline library), scaled down
-/// when free physical RAM is low. Never returns less than 2,000 ms.
+/// when RAM cache headroom is low. Never returns less than 2,000 ms.
 /// With plenty of it five minutes ([`keep_freed`]).
 pub(crate) fn ram_idle_ms(avail_phys: Option<u64>) -> u64 {
     ram_idle_for(avail_phys, keep_freed())

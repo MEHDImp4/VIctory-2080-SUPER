@@ -2811,7 +2811,7 @@ pub(crate) fn let_go_idle() {
         if map.is_empty() {
             return;
         }
-        let idle_ms = crate::host::ram_idle_ms(crate::host::available_physical_ram());
+        let idle_ms = crate::host::ram_idle_ms(crate::host::ram_cache_headroom());
         let idle: Vec<(u64, u64)> = map
             .iter()
             .filter(|(_, s)| {

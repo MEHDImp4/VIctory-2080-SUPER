@@ -37,10 +37,20 @@ const PIPELINES: &str = "known-pipelines.bin";
 const STAGES: [&str; 8] =
     ["vertex", "pixel", "domain", "hull", "geometry", "compute", "amplification", "mesh"];
 
-/// `VICTORY_PIPELINE_BOOK=1`: the pipelines the title creates are kept.
-fn on() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("VICTORY_PIPELINE_BOOK").is_some_and(|v| v == "1"))
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Record {
+    Off,
+    Created,
+    Requested,
+}
+
+fn recording() -> Record {
+    static MODE: OnceLock<Record> = OnceLock::new();
+    *MODE.get_or_init(|| match std::env::var("VICTORY_PIPELINE_BOOK").as_deref() {
+        Ok("1") => Record::Created,
+        Ok("used") => Record::Requested,
+        _ => Record::Off,
+    })
 }
 
 struct Book {
@@ -56,7 +66,7 @@ static BOOK: OnceLock<Option<Mutex<Book>>> = OnceLock::new();
 
 fn book() -> Option<&'static Mutex<Book>> {
     BOOK.get_or_init(|| {
-        let dir = super::library::folder().filter(|_| on())?;
+        let dir = super::library::folder()?;
         std::fs::create_dir_all(&dir).ok()?;
         let mut keys = HashSet::new();
         let mut shaders = HashSet::new();
@@ -87,8 +97,19 @@ fn book() -> Option<&'static Mutex<Book>> {
     .as_ref()
 }
 
-/// The title created a pipeline.
-pub(super) fn note(key: &str, shaders: &[Arc<Shader>], graphics: Option<&GraphicsState>) {
+pub(super) fn note_created(key: &str, shaders: &[Arc<Shader>], graphics: Option<&GraphicsState>) {
+    if recording() == Record::Created {
+        note(key, shaders, graphics);
+    }
+}
+
+pub(super) fn note_requested(key: &str, shaders: &[Arc<Shader>], graphics: Option<&GraphicsState>) {
+    if recording() == Record::Requested {
+        note(key, shaders, graphics);
+    }
+}
+
+fn note(key: &str, shaders: &[Arc<Shader>], graphics: Option<&GraphicsState>) {
     let Some(book) = book() else { return };
     let mut id = [0u8; 16];
     for (at, b) in id.iter_mut().enumerate() {

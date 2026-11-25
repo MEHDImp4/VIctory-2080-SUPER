@@ -43,13 +43,40 @@ pub(crate) fn sources(data: &[u8]) -> Vec<Source<'_>> {
         out.extend(sgd5::records(data).map(Source::Packed));
     }
     let raw = memchr::memmem::find_iter(data, b"DXBC")
-        .filter(|&offset| Container::parse(&data[offset..]).is_ok())
-        .map(|offset| Source::Raw {
-            offset,
-            data: &data[offset..],
+        .filter_map(|offset| {
+            let tail = &data[offset..];
+            // The cache hashes the shader bytes. The enclosing file's tail
+            // is neither part of the container nor supplied by the title.
+            let size = u32::from_le_bytes(tail.get(0x18..0x1c)?.try_into().ok()?) as usize;
+            let data = tail.get(..size)?;
+            Container::parse(data).ok()?;
+            Some(Source::Raw { offset, data })
         });
     out.extend(raw);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_sources_exclude_trailing_archive_bytes() {
+        let mut shader = [0u8; 32];
+        shader[..4].copy_from_slice(b"DXBC");
+        shader[0x18..0x1c].copy_from_slice(&32u32.to_le_bytes());
+        let mut archive = b"prefix".to_vec();
+        archive.extend(shader);
+        archive.extend(b"padding");
+        archive.extend(shader);
+        archive.extend(b"trailing bytes");
+        archive.extend(b"DXBC"); // A truncated header is ignored.
+
+        let found = sources(&archive);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].bytes().as_deref(), Some(shader.as_slice()));
+        assert_eq!(found[1].bytes().as_deref(), Some(shader.as_slice()));
+    }
 }
 
 #[derive(Default)]
