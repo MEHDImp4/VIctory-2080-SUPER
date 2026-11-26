@@ -3469,7 +3469,11 @@ impl RelayBack {
         self.found = Some(crate::shadow::find_all(&self.work));
         crate::land::spent(stat, scanning);
         #[cfg(feature = "diagnostics")]
-        crate::copystat::add(crate::copystat::C::BackScanUs, scanning.elapsed().as_micros() as u64);
+        {
+            crate::copystat::add(crate::copystat::C::BackScanUs, scanning.elapsed().as_micros() as u64);
+            let differ = self.found.as_ref().map_or(0, |f| f.iter().map(Vec::len).sum::<usize>());
+            crate::copystat::add(crate::copystat::C::BackDiffer, differ as u64);
+        }
     }
 
     /// What differs goes into title memory.
@@ -3858,7 +3862,10 @@ fn hand_back(back: &[Declared]) {
         let scanning = std::time::Instant::now();
         let found = crate::shadow::find_all(&work);
         #[cfg(feature = "diagnostics")]
-        crate::copystat::add(crate::copystat::C::BackScanUs, scanning.elapsed().as_micros() as u64);
+        {
+            crate::copystat::add(crate::copystat::C::BackScanUs, scanning.elapsed().as_micros() as u64);
+            crate::copystat::add(crate::copystat::C::BackDiffer, found.iter().map(Vec::len).sum::<usize>() as u64);
+        }
         for ((shadow, from, to), found) in work.iter().zip(found) {
             let written = shadow.copy_back_with(*from, to - from, Some(found));
             COPY_BACK[1].fetch_add(written as u64, Ordering::Relaxed);
