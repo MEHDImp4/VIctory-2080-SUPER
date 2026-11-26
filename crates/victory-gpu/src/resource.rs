@@ -361,13 +361,19 @@ pub(crate) struct Twin {
     /// that plane (8 bits a texel) and this the buffer the two are copied
     /// through: no colour format shares a family with a depth-stencil
     /// format, but the host copies between a buffer and one plane.
-    pub(crate) through: Option<windows::Win32::Graphics::Direct3D12::ID3D12Resource>,
+    pub(crate) stencil_copy: Option<StencilCopy>,
     /// For a depth texture with a stencil plane: the twin of its depth
     /// plane, 16 bits a texel for the console's 16-bit depth-stencil
     /// formats and a 32-bit float otherwise. No host colour format holds
     /// the bits of a 24-bit depth plane, so the two are not copied: a pass
     /// draws the twin into the plane.
     pub(crate) plane: Option<std::sync::Arc<HostTexture>>,
+}
+
+#[cfg(windows)]
+pub(crate) struct StencilCopy {
+    pub(crate) buffer: windows::Win32::Graphics::Direct3D12::ID3D12Resource,
+    pub(crate) footprints: Vec<windows::Win32::Graphics::Direct3D12::D3D12_PLACED_SUBRESOURCE_FOOTPRINT>,
 }
 
 #[cfg(windows)]
@@ -516,29 +522,30 @@ fn twin_texture(
     // The buffer a stencil plane and its twin are copied through: as big
     // as the plane's mips and slices laid out for a copy (they follow the
     // depth plane's in the texture's subresources).
-    let through = if stencil {
+    let stencil_copy = if stencil {
         // SAFETY: a live texture.
         let of = unsafe { depth.GetDesc() };
         let planes = u32::from(of.MipLevels) * u32::from(of.DepthOrArraySize);
+        let mut footprints = vec![D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); planes as usize];
         let mut bytes = 0;
-        // SAFETY: a plain query; the out pointer is ours.
+        // SAFETY: a plain query; the output has room for all requested layouts.
         unsafe {
             host.device.GetCopyableFootprints(
                 &of,
                 planes,
                 planes,
                 0,
-                None,
+                Some(footprints.as_mut_ptr()),
                 None,
                 None,
                 Some(&mut bytes),
             );
         }
-        let Some(buffer) = host.uav_buffer(bytes) else {
+        let Some(buffer) = host.stencil_copy_buffer(bytes) else {
             TWINS[1].fetch_add(1, Relaxed);
             return None;
         };
-        Some(buffer)
+        Some(StencilCopy { buffer, footprints })
     } else {
         None
     };
@@ -583,7 +590,7 @@ fn twin_texture(
     Some(std::sync::Arc::new(Twin {
         colour: std::sync::Arc::new(HostTexture::new(texture, UNORDERED_ACCESS)),
         behind: std::sync::atomic::AtomicU32::new(0),
-        through,
+        stencil_copy,
         plane,
     }))
 }

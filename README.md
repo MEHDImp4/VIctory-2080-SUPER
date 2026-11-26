@@ -72,6 +72,14 @@ The profile limits waits for regular pipeline compilation to 120 ms per frame. P
 draws may be omitted temporarily, so prewarming is recommended. Screen
 passes keep their separate wait budget.
 
+The indexed texture queue prioritizes retries, then alternates recent and
+old writes. Each frame it counts the backlog in the same pass as it chooses
+the uploads and sorts only the entries it will visit. Stencil copies share
+one temporary buffer per power-of-two size on the direct queue, with the
+copy layouts cached at creation time. These changes adapt the
+[texture queue work in HrHd/VIctory](https://github.com/HrHd/victory-fork/commit/f24b62b7db87b47b97502371a1a3398a39c58e00)
+and [stencil buffer reuse from upstream](https://github.com/Marvisak/VIctory/commit/9a12a45ed98e000ebd03245538678720dbd022a9).
+
 For comparison, run the same checkpoint and camera path with `-Profile Default`
 and `-Profile Rtx2080Super`, with ray tracing off and a warm shader cache for
 both. Compare frame times, visible texture pop-in, and local video memory usage.

@@ -714,10 +714,15 @@ pub(crate) extern "system" fn create_stream(
             );
             break;
         };
+        if size > desc.size - at {
+            tracing::warn!(kind, at, size, "truncated pipeline subobject; the rest is ignored");
+            break;
+        }
         if let Some(stage) = stage {
-            // SAFETY: a shader subobject has its bytecode at +8.
-            let code = unsafe { &*desc.stream.add(at + 8).cast::<Bytecode>() };
-            shaders.extend(copy(stage, code));
+            // SAFETY: a complete shader subobject has its bytecode at +8.
+            // The title's byte stream need not have Bytecode alignment.
+            let code = unsafe { desc.stream.add(at + 8).cast::<Bytecode>().read_unaligned() };
+            shaders.extend(copy(stage, &code));
         }
         #[cfg(windows)]
         // SAFETY: a whole subobject of this kind lies at `at`.
@@ -905,5 +910,25 @@ mod tests {
                 (1, 28)
             );
         }
+    }
+
+    #[test]
+    fn streams_read_unaligned_shaders_and_ignore_a_truncated_subobject() {
+        #[repr(align(8))]
+        struct Storage([u8; 33]);
+        let mut storage = Storage([0; 33]);
+        let stream = &mut storage.0[1..];
+        let shader = [76u8, 183, 237];
+        stream[0..4].copy_from_slice(&2u32.to_le_bytes()); // pixel shader
+        stream[8..16].copy_from_slice(&(shader.as_ptr() as u64).to_le_bytes());
+        stream[16..24].copy_from_slice(&(shader.len() as u64).to_le_bytes());
+        stream[24..28].copy_from_slice(&2u32.to_le_bytes()); // bytecode missing
+        let desc = StreamDesc { size: stream.len(), stream: stream.as_ptr() };
+        let mut pipeline = std::ptr::null();
+        assert_eq!(
+            create_stream(std::ptr::null(), &desc, &PIPELINE_IIDS[0], &mut pipeline),
+            S_OK
+        );
+        assert_eq!(shaders(pipeline), [("pixel", shader.to_vec())]);
     }
 }

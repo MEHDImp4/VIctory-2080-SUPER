@@ -906,6 +906,28 @@ pub(crate) struct TextureQueue {
     held: std::collections::BTreeMap<u32, u64>,
 }
 
+/// Sort the ends a texture pass will actually visit. The middle of a large
+/// streaming backlog is left unsorted.
+fn order_texture_writes(writes: &mut [(u32, u64)], newest: usize, oldest: usize) {
+    let by_write = |&(_, write): &(u32, u64)| std::cmp::Reverse(write);
+    if newest + oldest == 0 || writes.is_sorted_by_key(by_write) {
+        return;
+    }
+    if newest + oldest == writes.len() {
+        writes.sort_unstable_by_key(by_write);
+        return;
+    }
+    let old_start = writes.len() - oldest;
+    if newest > 0 {
+        writes.select_nth_unstable_by_key(newest, by_write);
+        writes[..newest].sort_unstable_by_key(by_write);
+    }
+    if oldest > 0 {
+        writes[newest..].select_nth_unstable_by_key(old_start - newest, by_write);
+        writes[old_start..].sort_unstable_by_key(by_write);
+    }
+}
+
 impl TextureQueue {
     /// A texture view was written into slot `index` in `frame`, due from
     /// frame `due`. `seen`: it was not written, a draw or the pass made
@@ -934,29 +956,47 @@ impl TextureQueue {
     ///   25,000-40,000 while the textures of the shot on screen waited
     ///   (run 52: 98% of the drawn pixels had no colour texture in the
     ///   first 3D frames).
-    fn due(&self, frame: u64, max: usize) -> Vec<(u32, u64)> {
-        let mut again: Vec<(u64, u32, u64)> = Vec::new();
-        let mut fresh: Vec<(u64, u32, u64)> = Vec::new();
-        for (&index, w) in self.slots.iter().filter(|(_, w)| w.due <= frame) {
-            let class = if w.looks > 0 || w.mapped > 0 { &mut again } else { &mut fresh };
-            class.push((w.written, index, w.write));
-        }
-        // By the number of the write, counted over the run.
-        let newest_first = |a: &(u64, u32, u64), b: &(u64, u32, u64)| b.2.cmp(&a.2);
-        again.sort_unstable_by(newest_first);
-        fresh.sort_unstable_by(newest_first);
-        let mut order: Vec<(u32, u64)> = again.iter().map(|&(_, index, write)| (index, write)).collect();
-        let (mut new, mut old) = (0, fresh.len());
-        while new < old && order.len() < max {
-            order.push((fresh[new].1, fresh[new].2));
-            new += 1;
-            if new < old && order.len() < max {
-                old -= 1;
-                order.push((fresh[old].1, fresh[old].2));
+    fn schedule(&self, frame: u64, max: usize) -> (Vec<(u32, u64)>, [u64; 5]) {
+        let mut again = Vec::new();
+        let mut fresh = Vec::new();
+        // Queue size, due, waiting for memory, partially uploaded, oldest due age.
+        let mut counts = [self.slots.len() as u64, 0, 0, 0, 0];
+        for (&index, w) in &self.slots {
+            if w.mapped > 0 {
+                counts[3] += 1;
+            } else if w.looks > 0 {
+                counts[2] += 1;
+            }
+            if w.due > frame {
+                continue;
+            }
+            counts[1] += 1;
+            counts[4] = counts[4].max(frame.saturating_sub(w.written));
+            if max != 0 {
+                let class = if w.looks > 0 || w.mapped > 0 { &mut again } else { &mut fresh };
+                class.push((index, w.write));
             }
         }
-        order.truncate(max);
-        order
+        let retries = again.len().min(max);
+        order_texture_writes(&mut again, retries, 0);
+        again.truncate(retries);
+        let remaining = fresh.len().min(max - retries);
+        let newest = remaining.div_ceil(2);
+        let oldest = remaining / 2;
+        order_texture_writes(&mut fresh, newest, oldest);
+        again.reserve(remaining);
+        for i in 0..newest {
+            again.push(fresh[i]);
+            if i < oldest {
+                again.push(fresh[fresh.len() - 1 - i]);
+            }
+        }
+        (again, counts)
+    }
+
+    #[cfg(test)]
+    fn due(&self, frame: u64, max: usize) -> Vec<(u32, u64)> {
+        self.schedule(frame, max).0
     }
 
     /// The entry of `index` if it is still the write the pass was handed.
@@ -1054,23 +1094,9 @@ impl TextureQueue {
         self.slots.get(&index).map_or(0, |w| w.mapped)
     }
 
-    /// For the frame line: slots in the queue; of them due at `frame`;
-    /// waiting for their memory (looked at, never uploaded); uploaded in
-    /// part; and the frames the oldest due one has waited since its write.
+    #[cfg(test)]
     fn census(&self, frame: u64) -> [u64; 5] {
-        let mut c = [self.slots.len() as u64, 0, 0, 0, 0];
-        for w in self.slots.values() {
-            if w.mapped > 0 {
-                c[3] += 1;
-            } else if w.looks > 0 {
-                c[2] += 1;
-            }
-            if w.due <= frame {
-                c[1] += 1;
-                c[4] = c[4].max(frame.saturating_sub(w.written));
-            }
-        }
-        c
+        self.schedule(frame, 0).1
     }
 }
 
@@ -1728,7 +1754,7 @@ impl HostHeap {
     /// ([`TextureQueue::census`]).
     pub(crate) fn texture_slots_due(&self, frame: u64, max: usize) -> (Vec<(u32, u64)>, [u64; 5]) {
         let textures = self.textures.lock().unwrap_or_else(|e| e.into_inner());
-        (if max == 0 { Vec::new() } else { textures.due(frame, max) }, textures.census(frame))
+        textures.schedule(frame, max)
     }
 
     /// A number that changes when a slot is written or made due anew, and
@@ -5086,6 +5112,22 @@ mod tests {
         q.written(98, 14, 16, false);
         assert!(!q.due(15, 100).iter().any(|d| d.0 == 98));
         assert!(q.due(16, 100).iter().any(|d| d.0 == 98));
+    }
+
+    #[test]
+    fn the_texture_queue_keeps_its_order_with_a_limited_budget() {
+        let mut queue = TextureQueue::default();
+        for slot in [40, 10, 30, 80, 20, 70, 90, 60, 50] {
+            queue.written(slot, 1, 0, false);
+        }
+        queue.later(30, 3, 1, 4);
+        queue.partly(70, 6, 1, 4096);
+        let expected = [(70, 6), (30, 3), (50, 9), (40, 1), (60, 8), (10, 2), (90, 7), (80, 4), (20, 5)];
+        for max in 0..=expected.len() + 1 {
+            let (due, counts) = queue.schedule(2, max);
+            assert_eq!(due, expected[..max.min(expected.len())]);
+            assert_eq!(counts, [9, 9, 1, 1, 1]);
+        }
     }
 
     /// Slots held back for lack of room on the card are not handed out

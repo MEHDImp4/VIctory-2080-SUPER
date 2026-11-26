@@ -54,6 +54,7 @@ pub(crate) struct Host {
     messages: Option<ID3D12InfoQueue>,
     next_rtv: AtomicU32,
     presenter: Mutex<Option<Presenter>>,
+    stencil_buffers: Mutex<std::collections::BTreeMap<u64, ID3D12Resource>>,
     /// The adapter the device is on, for its memory budget
     /// ([`Host::video_memory`]); `None` if the system does not name it.
     adapter: Option<IDXGIAdapter3>,
@@ -974,6 +975,7 @@ fn create() -> windows::core::Result<Host> {
             messages,
             next_rtv: AtomicU32::new(0),
             presenter: Mutex::new(None),
+            stencil_buffers: Mutex::new(std::collections::BTreeMap::new()),
             adapter,
         })
     }
@@ -1585,7 +1587,7 @@ fn record_twin_copy(
     if colour && twin.plane.is_some() {
         crate::resource::PLANES[1].fetch_add(1, Ordering::Relaxed);
     }
-    let Some(through) = &twin.through else {
+    let Some(stencil) = &twin.stencil_copy else {
         // SAFETY: an open list and two live textures.
         unsafe { list.CopyResource(to, from) };
         return;
@@ -1595,24 +1597,9 @@ fn record_twin_copy(
     // and from the buffer into the other texture, whole subresources both
     // times. In the depth texture the stencil plane's subresources follow
     // the depth plane's; the twin has the one plane.
-    let Some(host) = host() else { return };
-    // SAFETY: a live texture.
-    let of = unsafe { depth.GetDesc() };
-    let planes = u32::from(of.MipLevels) * u32::from(of.DepthOrArraySize);
-    let mut rows = vec![D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default(); planes as usize];
-    // SAFETY: a plain query writing `planes` footprints.
-    unsafe {
-        host.device.GetCopyableFootprints(
-            &of,
-            planes,
-            planes,
-            0,
-            Some(rows.as_mut_ptr()),
-            None,
-            None,
-            None,
-        );
-    }
+    let through = &stencil.buffer;
+    let rows = &stencil.footprints;
+    let planes = rows.len() as u32;
     let (first_from, first_to) = if colour { (planes, 0) } else { (0, planes) };
     let subresource = |texture: &ID3D12Resource, index: u32| D3D12_TEXTURE_COPY_LOCATION {
         // SAFETY: a borrowed pointer the location never releases.
@@ -9277,6 +9264,21 @@ impl Host {
                 None
             }
         }
+    }
+
+    /// Stencil copies share a buffer per size class. Both the prelude and the
+    /// main list run on the direct queue, and each copy restores COMMON.
+    pub(crate) fn stencil_copy_buffer(&self, bytes: u64) -> Option<ID3D12Resource> {
+        let size = bytes.max(1 << 16).checked_next_power_of_two()?;
+        let mut buffers = self.stencil_buffers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(buffer) = buffers.get(&size) {
+            return Some(buffer.clone());
+        }
+        let buffer = self.uav_buffer(size)?;
+        name(&buffer, || format!("stencil copies {size:#x}"));
+        tracing::info!(bytes = size, total_bytes = size + buffers.keys().sum::<u64>(), "allocated a shared stencil copy buffer");
+        buffers.insert(size, buffer.clone());
+        Some(buffer)
     }
 
     /// A device-local buffer shaders may write (unordered access) and indirect
