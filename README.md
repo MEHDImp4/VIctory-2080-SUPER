@@ -80,6 +80,12 @@ copy layouts cached at creation time. These changes adapt the
 [texture queue work in HrHd/VIctory](https://github.com/HrHd/victory-fork/commit/f24b62b7db87b47b97502371a1a3398a39c58e00)
 and [stencil buffer reuse from upstream](https://github.com/Marvisak/VIctory/commit/9a12a45ed98e000ebd03245538678720dbd022a9).
 
+On the RTX 2080 SUPER test system the title still requested a 3840×2160
+swap chain, even with 1080p in a copy of the saved video settings. Running
+with `--console series-s` requested 1920×1080, and the fork's presenter
+showed a black screen. The profile uses Series X. See the upstream
+[Series S presentation work](https://github.com/Marvisak/VIctory/pull/1997).
+
 For comparison, run the same checkpoint and camera path with `-Profile Default`
 and `-Profile Rtx2080Super`, with ray tracing off and a warm shader cache for
 both. Compare frame times, visible texture pop-in, and local video memory usage.
