@@ -35,6 +35,7 @@ if ($Profile -eq 'Rtx2080Super') {
     $settings.VICTORY_UPLOAD_AHEAD_VRAM_PERCENT = '85'
     $settings.VICTORY_DISPLAY_MODE = '1920x1080'
     $settings.VICTORY_RAM_COMMIT_AWARE = '1'
+    $settings.VICTORY_POOL_HEADROOM = '1'
     $settings.VICTORY_PIPELINE_WAIT_MS = '120'
 }
 if ($RayTracing) { $settings.VICTORY_BVH_BUILDER = '1' }

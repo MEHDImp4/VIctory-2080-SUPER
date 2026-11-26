@@ -42,11 +42,29 @@ static SPARES: AtomicUsize = AtomicUsize::new(SPARE);
 /// [`SPARE_KEPT`] below 85 % ([`crate::host::keep_freed`]), else [`SPARE`].
 /// Asked once a second.
 pub(crate) fn room(memory: Option<[u64; 4]>) {
-    SPARES.store(spares(memory, crate::host::keep_freed()), Ordering::Relaxed);
+    static HEADROOM: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let limited = *HEADROOM.get_or_init(|| crate::switch::on("VICTORY_POOL_HEADROOM"));
+    let most = spares(memory, crate::host::keep_freed(), limited);
+    SPARES.store(most, Ordering::Relaxed);
+    if limited {
+        // The streaming pass can stop asking for pieces under pressure.
+        // Sweep the pools even when that happens. Resting pieces still
+        // have to age before an empty block can be released.
+        let now = now();
+        lock(&TEXTURES).rested(now);
+        lock(&STAGING).rested(now);
+    }
 }
 
-fn spares(memory: Option<[u64; 4]>, keep: bool) -> usize {
+fn spares(memory: Option<[u64; 4]>, keep: bool, limited: bool) -> usize {
     match memory {
+        Some([budget, used, ..])
+            if keep && limited && u128::from(used) * 100 < u128::from(budget) * 85 =>
+        {
+            // Leave most of the remaining budget for live textures, render
+            // targets and GPU buffers. Keep a small reserve for streaming.
+            (budget.saturating_sub(used) / (8 * BLOCK)).clamp(SPARE as u64, SPARE_KEPT as u64) as usize
+        }
         Some([budget, used, ..]) if keep && u128::from(used) * 100 < u128::from(budget) * 85 => SPARE_KEPT,
         _ => SPARE,
     }
@@ -272,6 +290,10 @@ impl<B: Clone> Pool<B> {
     /// Makes the pieces that rested long enough free, and lets go of empty
     /// blocks past [`SPARE`].
     fn rested(&mut self, now: u64) {
+        self.rested_with_limit(now, SPARES.load(Ordering::Relaxed).min(self.most));
+    }
+
+    fn rested_with_limit(&mut self, now: u64, most: usize) {
         let mut any = false;
         while let Some(&(ready, piece)) = self.resting.front()
             && ready <= now
@@ -283,9 +305,7 @@ impl<B: Clone> Pool<B> {
             }
         }
         // (Without a piece given back too, once there is less room.)
-        let most = SPARES.load(Ordering::Relaxed).min(self.most);
         if any || most < self.spare {
-            self.spare = most;
             let mut spare = 0;
             for block in &mut self.blocks {
                 if block.as_ref().is_some_and(|b| b.free.whole(BLOCK)) {
@@ -296,6 +316,7 @@ impl<B: Clone> Pool<B> {
                 }
             }
         }
+        self.spare = most;
     }
 
     fn blocks(&self) -> usize {
@@ -554,10 +575,33 @@ mod tests {
 
     #[test]
     fn empty_blocks_stay_while_the_card_has_room() {
-        assert_eq!(spares(Some([100, 84, 0, 0]), true), SPARE_KEPT);
-        assert_eq!(spares(Some([100, 85, 0, 0]), true), SPARE);
-        assert_eq!(spares(Some([100, 10, 0, 0]), false), SPARE);
-        assert_eq!(spares(None, true), SPARE);
+        assert_eq!(spares(Some([100, 84, 0, 0]), true, false), SPARE_KEPT);
+        assert_eq!(spares(Some([100, 85, 0, 0]), true, false), SPARE);
+        assert_eq!(spares(Some([100, 10, 0, 0]), false, false), SPARE);
+        assert_eq!(spares(None, true, false), SPARE);
+    }
+
+    #[test]
+    fn spare_blocks_use_only_part_of_the_remaining_budget() {
+        let gib = 1 << 30;
+        assert_eq!(spares(Some([8 * gib, 6 * gib, 0, 0]), true, true), 4);
+        assert_eq!(spares(Some([8 * gib, 7 * gib, 0, 0]), true, true), SPARE);
+        assert_eq!(spares(Some([128 * gib, 0, 0, 0]), true, true), SPARE_KEPT);
+        assert_eq!(spares(None, true, true), SPARE);
+    }
+
+    #[test]
+    fn dropping_the_limit_releases_empty_blocks_without_another_return() {
+        let mut pool = Pool::new(SPARE_KEPT);
+        pool.rested_with_limit(0, 4);
+        for block in 0..4 {
+            pool.add(block, 0);
+        }
+        let used = pool.blocks[0].as_mut().unwrap();
+        used.free.take(BLOCK / 2, 1).unwrap();
+        pool.rested_with_limit(0, SPARE);
+        assert_eq!(pool.blocks(), 3);
+        assert!(pool.blocks[0].is_some());
     }
 
     #[test]

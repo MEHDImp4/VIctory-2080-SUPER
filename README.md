@@ -65,8 +65,10 @@ Windows or when the budget cannot be read. Existing jobs finish and new uploads
 use the regular command lists. The threshold is a starting point for testing
 on an 8 GiB RTX 2080 SUPER. The profile reports a 1080p display mode to the
 title, which can still choose its own render resolution. It releases idle
-staging and shadow buffers sooner when Windows is short of commit. It also
-limits waits for regular pipeline compilation to 120 ms per frame. Pending
+staging and shadow buffers sooner when Windows is short of commit. The
+texture pool limits empty reserve blocks using the remaining DXGI budget
+and trims empty blocks even when the loader stops requesting new space.
+The profile limits waits for regular pipeline compilation to 120 ms per frame. Pending
 draws may be omitted temporarily, so prewarming is recommended. Screen
 passes keep their separate wait budget.
 
@@ -76,6 +78,7 @@ both. Compare frame times, visible texture pop-in, and local video memory usage.
 Use `-More @{VICTORY_UPLOAD_AHEAD_VRAM_PERCENT='80'}` to test another
 threshold. A value of `0` disables the guard. With `-Safe`, speculative uploads
 are already disabled.
+Use `-More @{VICTORY_POOL_HEADROOM='0'}` to compare the previous pool policy.
 
 ### Prepare the shader and pipeline caches
 
