@@ -82,6 +82,12 @@ pub fn load(prepared: &PreparedImage, dir: &Path) -> Result<LoadedImage> {
     // A DLL indexes its TLS properly; only an exe assumes index 0.
     if !loaded.info.is_dll() {
         // SAFETY: just mapped, and no title code has run.
+        if let Err(err) = unsafe { crate::hooks::render_scale(loaded.base(), &prepared.original_hash) } {
+            // SAFETY: the failed mapping has not been published or run.
+            unsafe { loaded.unload() };
+            return Err(err);
+        }
+        // SAFETY: just mapped, and no title code has run.
         unsafe { crate::tls::redirect(loaded.base(), &loaded.info) }?;
     }
     tracing::info!(

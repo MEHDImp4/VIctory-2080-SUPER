@@ -80,11 +80,27 @@ copy layouts cached at creation time. These changes adapt the
 [texture queue work in HrHd/VIctory](https://github.com/HrHd/victory-fork/commit/f24b62b7db87b47b97502371a1a3398a39c58e00)
 and [stencil buffer reuse from upstream](https://github.com/Marvisak/VIctory/commit/9a12a45ed98e000ebd03245538678720dbd022a9).
 
-On the RTX 2080 SUPER test system the title still requested a 3840×2160
-swap chain, even with 1080p in a copy of the saved video settings. Running
-with `--console series-s` requested 1920×1080, and the fork's presenter
-showed a black screen. The profile uses Series X. See the upstream
-[Series S presentation work](https://github.com/Marvisak/VIctory/pull/1997).
+On the RTX 2080 SUPER test system the title requested a 3840×2160 swap chain
+in Series X, even with 1080p in a copy of the saved video settings. The
+experimental Series S option uses a 960×540 render and the title's temporal
+upscaler to present at 1920×1080. It composites the interface over the game
+and checks the executable's build and mapped instructions before applying
+the render scale.
+
+```powershell
+scripts\play.ps1 -Profile Rtx2080Super -SeriesS540p -Exe <path of your copy's executable>
+```
+
+The Series S option requests a larger reserve for temporary descriptor tables.
+Use `-More @{VICTORY_DYNAMIC_SLOTS='524288'}` to request the same reserve with
+Series X. On a driver-capped NVIDIA heap the setting is capped to half of the
+usable heap. Enlarging the reserve reduces how many title descriptors are
+mirrored in place. The video fix updates the intro planes in the submission
+that uses them. These
+changes adapt [VIctory-NVIDIA's descriptor reserve](https://github.com/trustno1-coder/VIctory-NVIDIA/commit/a9632bc),
+[plane compositor](https://github.com/trustno1-coder/VIctory-NVIDIA/commit/7997a20),
+[render-scale hook](https://github.com/trustno1-coder/VIctory-NVIDIA/commit/afd84de)
+and [video-plane fix](https://github.com/trustno1-coder/VIctory-NVIDIA/commit/77e13a9).
 
 For comparison, run the same checkpoint and camera path with `-Profile Default`
 and `-Profile Rtx2080Super`, with ray tracing off and a warm shader cache for

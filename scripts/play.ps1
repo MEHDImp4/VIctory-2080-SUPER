@@ -2,6 +2,7 @@
 #   scripts\play.ps1 -Exe <path of your own copy's executable>
 # -Safe         without the newer, faster ways (the first thing to try when something is wrong)
 # -Profile      Default or Rtx2080Super, which limits speculative uploads near the VRAM budget
+# -SeriesS540p  experiment with the Series S profile and a 540p render upscaled to 1080p
 # -Prepare      translate shaders and warm known pipelines, then exit
 # -RecordPipelines  record the pipelines requested by draws for the next warm-up
 # -LogPath      save a diagnostic log in addition to the console output
@@ -16,6 +17,7 @@ param(
     [ValidateSet('diag', 'release')][string]$Build = 'diag',
     [hashtable]$More = @{},
     [ValidateSet('Default', 'Rtx2080Super')][string]$Profile = 'Default',
+    [switch]$SeriesS540p,
     [switch]$Prepare,
     [switch]$RecordPipelines,
     [string]$LogPath
@@ -37,6 +39,13 @@ if ($Profile -eq 'Rtx2080Super') {
     $settings.VICTORY_RAM_COMMIT_AWARE = '1'
     $settings.VICTORY_POOL_HEADROOM = '1'
     $settings.VICTORY_PIPELINE_WAIT_MS = '120'
+}
+$console = 'series-x'
+if ($SeriesS540p) {
+    $console = 'series-s'
+    $settings.VICTORY_COMPOSE = '1'
+    $settings.VICTORY_RENDER_SCALE = '0.5'
+    $settings.VICTORY_DYNAMIC_SLOTS = '524288'
 }
 if ($RayTracing) { $settings.VICTORY_BVH_BUILDER = '1' }
 if ($RecordPipelines) { $settings.VICTORY_PIPELINE_BOOK = 'used' }
@@ -68,6 +77,6 @@ try {
         & $victory warm --used --jobs 2
         if ($LASTEXITCODE -ne 0) { throw "Pipeline preparation failed (exit $LASTEXITCODE)." }
     } else {
-        & $victory run $Exe --execute
+        & $victory run $Exe --execute --console $console
     }
 } finally { Pop-Location }
